@@ -3,7 +3,7 @@ import { format } from 'date-fns';
 import Tesseract from 'tesseract.js';
 import * as chrono from 'chrono-node';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Bell, Calendar, Plus, Wallet, Home, User, Settings, Camera, Zap, X, Upload } from 'lucide-react';
+import { Calendar, Plus, Wallet, Home, User, Settings, Camera, Zap, X, Upload } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import CalendarView from './pages/CalendarView';
 import Expenses from './pages/Expenses';
@@ -11,8 +11,6 @@ import SettingsView from './pages/Settings';
 import type { Task, Bill } from './types';
 import './App.css';
 import LoginPage from './pages/LoginPage';
-
-const API_URL = import.meta.env.PROD ? '' : 'http://localhost:3000';
 
 function App() {
   const [showAddMenu, setShowAddMenu] = useState(false);
@@ -292,7 +290,7 @@ function App() {
         id: Date.now(),
         name: vendor,
         amount: maxAmount > 0 ? maxAmount.toFixed(2) : '0.00',
-        dueDate: (dates.length > 0) ? dates[0] : format(new Date(), 'yyyy-MM-dd'),
+        dueDate: (dates && dates.length > 0) ? dates[0] : format(new Date(), 'yyyy-MM-dd'),
         status: 'Logged'
       };
 

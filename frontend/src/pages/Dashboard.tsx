@@ -59,7 +59,7 @@ export default function Dashboard({ tasks, bills, loggedExpenses, budget, onTogg
             <button className="text-btn" onClick={() => navigate('/calendar')}>View All</button>
           </div>
           <div className="task-list">
-            {tasks.map(task => (
+            {todaysTasks.map(task => (
               <div 
                 key={task.id} 
                 className="glass-card task-item clickable"

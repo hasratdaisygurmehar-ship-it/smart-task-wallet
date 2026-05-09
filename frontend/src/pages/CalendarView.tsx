@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
-import { ChevronLeft, ChevronRight, CheckCircle2, ShoppingCart, Calendar as CalendarIcon, Wallet, Clock } from 'lucide-react';
-import { format, addMonths, subMonths, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isToday, startOfWeek, endOfWeek, isSameDay, parseISO } from 'date-fns';
+import { ChevronLeft, ChevronRight, ShoppingCart, Calendar as CalendarIcon, Wallet, Clock } from 'lucide-react';
+import { format, addMonths, subMonths, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isToday, startOfWeek, endOfWeek, isSameDay } from 'date-fns';
 import type { Bill, Task } from '../types';
 
 interface CalendarViewProps {

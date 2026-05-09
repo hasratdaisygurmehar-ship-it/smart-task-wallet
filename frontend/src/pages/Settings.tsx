@@ -1,4 +1,4 @@
-import { User, Bell, Shield, Moon, LogOut, ChevronRight, Wallet } from 'lucide-react';
+import { LogOut, Wallet } from 'lucide-react';
 
 interface SettingsProps {
   budget: number;

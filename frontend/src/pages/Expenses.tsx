@@ -1,9 +1,6 @@
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import { Wallet, TrendingUp, DollarSign, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { Wallet, DollarSign } from 'lucide-react';
 import type { Bill } from '../types';
-
-const categoryData: any[] = [];
-const monthlyData: any[] = [];
 
 const CustomTooltip = ({ active, payload }: any) => {
   if (active && payload && payload.length) {
