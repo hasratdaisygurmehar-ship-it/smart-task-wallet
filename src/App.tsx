@@ -59,9 +59,11 @@ function App() {
     return saved ? JSON.parse(saved) : [];
   });
 
+  const loadedUserId = useRef<string | null>(null);
+
   // Cloud Sync Logic
   const syncToCloud = async (data: any) => {
-    if (!currentUser || !supabase) return;
+    if (!currentUser || !supabase || loadedUserId.current !== currentUser.id) return;
     try {
       const { error } = await supabase
         .from('user_data')
@@ -129,12 +131,15 @@ function App() {
             setTasks([]);
           }
         }
+        // Mark as loaded for this specific user
+        loadedUserId.current = currentUser.id;
       } else {
         // Clear state when logged out
         setTasks([]);
         setBills([]);
         setLoggedExpenses([]);
         setBudget(0);
+        loadedUserId.current = null;
       }
     };
 
@@ -143,7 +148,7 @@ function App() {
 
   // Save effects - specifically only save when the DATA changes
   useEffect(() => { 
-    if (currentUser) {
+    if (currentUser && loadedUserId.current === currentUser.id) {
       localStorage.setItem(`budget_${currentUser.id}`, budget.toString());
       syncToCloud({ tasks, bills, loggedExpenses, budget });
     }
