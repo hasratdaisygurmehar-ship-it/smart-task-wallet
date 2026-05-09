@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "scripts": {
     "install:all": "npm install && cd frontend && npm install && cd ../backend && npm install",
-    "build:frontend": "cd frontend && npm run build",
+    "build:frontend": "cd frontend && npm run build && cp -r dist ../",
     "build:backend": "cd backend && npm run build",
-    "build": "npm run build:frontend && npm run build:backend",
+    "build": "npm run build:frontend",
     "start": "cd backend && npm start",
     "dev": "npm-run-all --parallel dev:frontend dev:backend",
     "dev:frontend": "cd frontend && npm run dev",
