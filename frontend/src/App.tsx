@@ -63,15 +63,16 @@ function App() {
     if (currentUser) {
       localStorage.setItem('currentUser', JSON.stringify(currentUser));
       
+      // Load data for this specific user
       const savedBudget = localStorage.getItem(`budget_${currentUser.id}`);
       const savedTasks = localStorage.getItem(`tasks_${currentUser.id}`);
       const savedBills = localStorage.getItem(`bills_${currentUser.id}`);
       const savedLogged = localStorage.getItem(`loggedExpenses_${currentUser.id}`);
       
-      if (savedBudget !== null) setBudget(Number(savedBudget));
+      setBudget(savedBudget !== null ? Number(savedBudget) : 0);
+      
       if (savedTasks !== null) {
         const loadedTasks = JSON.parse(savedTasks);
-        setTasks(loadedTasks);
         
         // Auto-rollover recurring tasks that are in the past
         const today = format(new Date(), 'yyyy-MM-dd');
@@ -79,7 +80,7 @@ function App() {
         const tasksToUpdate = [...loadedTasks];
 
         loadedTasks.forEach((task: Task) => {
-          if (task.recurring && task.repeatFrequency && task.date < today) {
+          if (task.recurring && task.repeatFrequency && task.date < today && !task.done) {
             const nextDate = calculateNextDate(task.date, task.repeatFrequency);
             const exists = tasksToUpdate.some(t => t.title === task.title && t.date === nextDate);
             
@@ -96,32 +97,43 @@ function App() {
           }
         });
 
-        if (needsUpdate) {
-          setTasks(tasksToUpdate);
-        }
+        setTasks(tasksToUpdate);
+      } else {
+        setTasks([]);
       }
-      if (savedBills !== null) setBills(JSON.parse(savedBills));
-      if (savedLogged !== null) setLoggedExpenses(JSON.parse(savedLogged));
+      
+      setBills(savedBills !== null ? JSON.parse(savedBills) : []);
+      setLoggedExpenses(savedLogged !== null ? JSON.parse(savedLogged) : []);
+    } else {
+      // Clear state when logged out
+      setTasks([]);
+      setBills([]);
+      setLoggedExpenses([]);
+      setBudget(0);
     }
   }, [currentUser]);
 
-  useEffect(() => { if (currentUser) localStorage.setItem(`budget_${currentUser.id}`, budget.toString()); }, [budget, currentUser]);
-  useEffect(() => { if (currentUser) localStorage.setItem(`tasks_${currentUser.id}`, JSON.stringify(tasks)); }, [tasks, currentUser]);
-  useEffect(() => { if (currentUser) localStorage.setItem(`bills_${currentUser.id}`, JSON.stringify(bills)); }, [bills, currentUser]);
-  useEffect(() => { if (currentUser) localStorage.setItem(`loggedExpenses_${currentUser.id}`, JSON.stringify(loggedExpenses)); }, [loggedExpenses, currentUser]);
+  // Save effects - specifically only save when the DATA changes, not just the user
+  // This prevents the "old data saving to new user" bug
+  useEffect(() => { 
+    if (currentUser) localStorage.setItem(`budget_${currentUser.id}`, budget.toString()); 
+  }, [budget]);
+
+  useEffect(() => { 
+    if (currentUser && tasks.length > 0) localStorage.setItem(`tasks_${currentUser.id}`, JSON.stringify(tasks)); 
+  }, [tasks]);
+
+  useEffect(() => { 
+    if (currentUser && bills.length > 0) localStorage.setItem(`bills_${currentUser.id}`, JSON.stringify(bills)); 
+  }, [bills]);
+
+  useEffect(() => { 
+    if (currentUser && loggedExpenses.length > 0) localStorage.setItem(`loggedExpenses_${currentUser.id}`, JSON.stringify(loggedExpenses)); 
+  }, [loggedExpenses]);
 
   const handleLogin = (user: any) => {
     setCurrentUser(user);
-    // Reload data for this user
-    const savedBudget = localStorage.getItem(`budget_${user.id}`);
-    const savedTasks = localStorage.getItem(`tasks_${user.id}`);
-    const savedBills = localStorage.getItem(`bills_${user.id}`);
-    const savedLogged = localStorage.getItem(`loggedExpenses_${user.id}`);
-    
-    setBudget(savedBudget ? Number(savedBudget) : 0);
-    setTasks(savedTasks ? JSON.parse(savedTasks) : []);
-    setBills(savedBills ? JSON.parse(savedBills) : []);
-    setLoggedExpenses(savedLogged ? JSON.parse(savedLogged) : []);
+    // Data loading is handled by the useEffect[currentUser]
   };
 
   const calculateNextDate = (currentDate: string, frequency: string) => {
