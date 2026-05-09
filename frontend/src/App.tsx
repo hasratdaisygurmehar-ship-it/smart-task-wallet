@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { format } from 'date-fns';
 import Tesseract from 'tesseract.js';
 import * as chrono from 'chrono-node';
+import { supabase } from './lib/supabase';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { Calendar, Plus, Wallet, Home, User, Settings, Camera, Zap, X, Upload } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
@@ -58,78 +59,95 @@ function App() {
     return saved ? JSON.parse(saved) : [];
   });
 
+  // Cloud Sync Logic
+  const syncToCloud = async (data: any) => {
+    if (!currentUser || !supabase) return;
+    try {
+      const { error } = await supabase
+        .from('user_data')
+        .upsert({ 
+          id: currentUser.id, 
+          data, 
+          updated_at: new Date().toISOString() 
+        });
+      if (error) console.error('Cloud Sync Error:', error.message);
+    } catch (err) {
+      console.error('Cloud Sync Failed:', err);
+    }
+  };
+
+  const loadFromCloud = async (userId: string) => {
+    if (!supabase) return null;
+    try {
+      const { data, error } = await supabase
+        .from('user_data')
+        .select('data')
+        .eq('id', userId)
+        .single();
+      
+      if (error) {
+        console.log('No cloud data found or error:', error.message);
+        return null;
+      }
+      return data?.data;
+    } catch (err) {
+      console.error('Failed to load from cloud:', err);
+      return null;
+    }
+  };
+
   // Persistence effects
   useEffect(() => {
-    if (currentUser) {
-      localStorage.setItem('currentUser', JSON.stringify(currentUser));
-      
-      // Load data for this specific user
-      const savedBudget = localStorage.getItem(`budget_${currentUser.id}`);
-      const savedTasks = localStorage.getItem(`tasks_${currentUser.id}`);
-      const savedBills = localStorage.getItem(`bills_${currentUser.id}`);
-      const savedLogged = localStorage.getItem(`loggedExpenses_${currentUser.id}`);
-      
-      setBudget(savedBudget !== null ? Number(savedBudget) : 0);
-      
-      if (savedTasks !== null) {
-        const loadedTasks = JSON.parse(savedTasks);
+    const initData = async () => {
+      if (currentUser) {
+        localStorage.setItem('currentUser', JSON.stringify(currentUser));
         
-        // Auto-rollover recurring tasks that are in the past
-        const today = format(new Date(), 'yyyy-MM-dd');
-        let needsUpdate = false;
-        const tasksToUpdate = [...loadedTasks];
+        // 1. Try to load from Cloud (Supabase)
+        const cloudData = await loadFromCloud(currentUser.id);
+        
+        if (cloudData) {
+          console.log('Loaded from Cloud!');
+          setTasks(cloudData.tasks || []);
+          setBills(cloudData.bills || []);
+          setLoggedExpenses(cloudData.loggedExpenses || []);
+          setBudget(cloudData.budget || 5000);
+        } else {
+          // 2. Fallback to LocalStorage
+          const savedBudget = localStorage.getItem(`budget_${currentUser.id}`);
+          const savedTasks = localStorage.getItem(`tasks_${currentUser.id}`);
+          const savedBills = localStorage.getItem(`bills_${currentUser.id}`);
+          const savedLogged = localStorage.getItem(`loggedExpenses_${currentUser.id}`);
+          
+          setBudget(savedBudget !== null ? Number(savedBudget) : 5000);
+          setBills(savedBills !== null ? JSON.parse(savedBills) : []);
+          setLoggedExpenses(savedLogged !== null ? JSON.parse(savedLogged) : []);
 
-        loadedTasks.forEach((task: Task) => {
-          if (task.recurring && task.repeatFrequency && task.date < today && !task.done) {
-            const nextDate = calculateNextDate(task.date, task.repeatFrequency);
-            const exists = tasksToUpdate.some(t => t.title === task.title && t.date === nextDate);
-            
-            if (!exists) {
-              const nextTask: Task = {
-                ...task,
-                id: Date.now() + Math.random(),
-                date: nextDate,
-                done: false
-              };
-              tasksToUpdate.unshift(nextTask);
-              needsUpdate = true;
-            }
+          if (savedTasks !== null) {
+            const loadedTasks = JSON.parse(savedTasks);
+            setTasks(loadedTasks);
+          } else {
+            setTasks([]);
           }
-        });
-
-        setTasks(tasksToUpdate);
+        }
       } else {
+        // Clear state when logged out
         setTasks([]);
+        setBills([]);
+        setLoggedExpenses([]);
+        setBudget(0);
       }
-      
-      setBills(savedBills !== null ? JSON.parse(savedBills) : []);
-      setLoggedExpenses(savedLogged !== null ? JSON.parse(savedLogged) : []);
-    } else {
-      // Clear state when logged out
-      setTasks([]);
-      setBills([]);
-      setLoggedExpenses([]);
-      setBudget(0);
-    }
+    };
+
+    initData();
   }, [currentUser]);
 
-  // Save effects - specifically only save when the DATA changes, not just the user
-  // This prevents the "old data saving to new user" bug
+  // Save effects - specifically only save when the DATA changes
   useEffect(() => { 
-    if (currentUser) localStorage.setItem(`budget_${currentUser.id}`, budget.toString()); 
-  }, [budget]);
-
-  useEffect(() => { 
-    if (currentUser && tasks.length > 0) localStorage.setItem(`tasks_${currentUser.id}`, JSON.stringify(tasks)); 
-  }, [tasks]);
-
-  useEffect(() => { 
-    if (currentUser && bills.length > 0) localStorage.setItem(`bills_${currentUser.id}`, JSON.stringify(bills)); 
-  }, [bills]);
-
-  useEffect(() => { 
-    if (currentUser && loggedExpenses.length > 0) localStorage.setItem(`loggedExpenses_${currentUser.id}`, JSON.stringify(loggedExpenses)); 
-  }, [loggedExpenses]);
+    if (currentUser) {
+      localStorage.setItem(`budget_${currentUser.id}`, budget.toString());
+      syncToCloud({ tasks, bills, loggedExpenses, budget });
+    }
+  }, [budget, tasks, bills, loggedExpenses]);
 
   const handleLogin = (user: any) => {
     setCurrentUser(user);
