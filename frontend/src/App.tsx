@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { format } from 'date-fns';
+import Tesseract from 'tesseract.js';
+import * as chrono from 'chrono-node';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { Bell, Calendar, Plus, Wallet, Home, User, Settings, Camera, Zap, X, Upload } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
@@ -181,15 +183,25 @@ function App() {
     if (!taskInput.trim()) return;
     setIsParsing(true);
     
-    // In this structured mode, we use the picker values primarily, 
-    // but we could still send to NLP if we want to extract title from text.
-    // For now, we'll treat taskInput as the title and use picker values for meta.
+    // Use chrono-node directly in the browser for NLP parsing
+    const parsedResults = chrono.parse(taskInput);
+    let detectedDate = taskDate;
+    let detectedTime = `${taskHour}:${taskMinute}`;
+
+    if (parsedResults.length > 0) {
+      const result = parsedResults[0];
+      if (result.start) {
+        const d = result.start.date();
+        detectedDate = format(d, 'yyyy-MM-dd');
+        detectedTime = format(d, 'HH:mm');
+      }
+    }
     
     const newTask: Task = {
       id: Date.now(),
       title: taskInput,
-      time: `${taskHour}:${taskMinute}`,
-      date: taskDate,
+      time: detectedTime,
+      date: detectedDate,
       priority: taskInput.toLowerCase().includes('urgent') ? 'High' : 'Medium',
       done: false,
       recurring: taskRepeat !== 'None',
@@ -251,22 +263,36 @@ function App() {
     if (!selectedFile) return;
     setIsScanning(true);
 
-    const formData = new FormData();
-    formData.append('billImage', selectedFile);
-
     try {
-      const res = await fetch(`${API_URL}/api/scan-bill`, {
-        method: 'POST',
-        body: formData,
+      // Run OCR directly in the browser
+      const { data: { text } } = await Tesseract.recognize(
+        selectedFile,
+        'eng',
+        { logger: m => console.log(m) }
+      );
+
+      // Extract Amount
+      const amountRegex = /[$]?\d{1,3}(?:,\d{3})*(?:\.\d{2})/g;
+      const amounts = text.match(amountRegex) || [];
+      let maxAmount = 0;
+      amounts.forEach(amt => {
+        const num = parseFloat(amt.replace(/[$|,]/g, ''));
+        if (num > maxAmount) maxAmount = num;
       });
 
-      const data = await res.json();
+      // Extract Dates
+      const dateRegex = /\b\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}\b|\b\d{4}[\/-]\d{1,2}[\/-]\d{1,2}\b/g;
+      const dates = text.match(dateRegex) || [];
+      
+      // Clean up vendor name (first line usually)
+      const lines = text.split('\n').filter(l => l.trim().length > 2);
+      const vendor = lines.length > 0 ? lines[0].trim() : 'Scanned Bill';
       
       const newBill: Bill = {
         id: Date.now(),
-        name: data.vendor || 'Scanned Bill',
-        amount: (data.detectedAmount || '0.00').toString().replace('$', ''),
-        dueDate: (data.detectedDates && data.detectedDates.length > 0) ? data.detectedDates[0] : format(new Date(), 'yyyy-MM-dd'),
+        name: vendor,
+        amount: maxAmount > 0 ? maxAmount.toFixed(2) : '0.00',
+        dueDate: (dates.length > 0) ? dates[0] : format(new Date(), 'yyyy-MM-dd'),
         status: 'Logged'
       };
 
@@ -278,7 +304,7 @@ function App() {
       console.error('Failed to scan bill', error);
       const newBill: Bill = {
         id: Date.now(),
-        name: 'Failed Scan',
+        name: 'Scan Failed',
         amount: '0.00',
         dueDate: format(new Date(), 'yyyy-MM-dd'),
         status: 'Error'
