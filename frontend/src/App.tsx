@@ -290,7 +290,7 @@ function App() {
         id: Date.now(),
         name: vendor,
         amount: maxAmount > 0 ? maxAmount.toFixed(2) : '0.00',
-        dueDate: (dates && dates.length > 0) ? dates[0] : format(new Date(), 'yyyy-MM-dd'),
+        dueDate: (dates && dates.length > 0 && dates[0]) ? dates[0] : format(new Date(), 'yyyy-MM-dd'),
         status: 'Logged'
       };
 
