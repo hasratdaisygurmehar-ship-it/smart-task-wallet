@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { ChevronLeft, ChevronRight, ShoppingCart, Calendar as CalendarIcon, Wallet, Clock } from 'lucide-react';
-import { format, addMonths, subMonths, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isToday, startOfWeek, endOfWeek, isSameDay } from 'date-fns';
+import { format, addMonths, subMonths, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isToday, startOfWeek, endOfWeek, isSameDay, differenceInDays, differenceInWeeks, differenceInMonths } from 'date-fns';
 import type { Bill, Task } from '../types';
 
 interface CalendarViewProps {
@@ -56,8 +56,56 @@ export default function CalendarView({ tasks, bills, loggedExpenses }: CalendarV
 
   const selectedDateStr = format(selectedDate, 'yyyy-MM-dd');
 
-  const filteredTasks = useMemo(() => 
-    tasks.filter(t => normalizeDate(t.date) === selectedDateStr),
+  // Helper function to check if a recurring task should appear on the selected date
+  const shouldShowRecurringTask = (task: Task, targetDateStr: string) => {
+    if (!task.recurring || !task.repeatFrequency) return false;
+
+    const taskDate = new Date(normalizeDate(task.date) || task.date);
+    const targetDate = new Date(targetDateStr);
+
+    if (isNaN(taskDate.getTime()) || isNaN(targetDate.getTime())) return false;
+
+    const daysDiff = differenceInDays(targetDate, taskDate);
+
+    switch (task.repeatFrequency) {
+      case 'Daily':
+        return daysDiff >= 0;
+      case 'Weekly':
+        return differenceInWeeks(targetDate, taskDate) >= 0 && daysDiff % 7 === 0;
+      case 'Monthly':
+        return differenceInMonths(targetDate, taskDate) >= 0 &&
+               taskDate.getDate() === targetDate.getDate();
+      case 'Every 1st':
+        return differenceInMonths(targetDate, taskDate) >= 0 &&
+               targetDate.getDate() === 1;
+      default:
+        return false;
+    }
+  };
+
+  // Helper function to check if this is a future occurrence of a recurring task
+  const isFutureRecurrence = (task: Task, targetDateStr: string) => {
+    if (!task.recurring || !task.repeatFrequency) return false;
+
+    const taskDate = new Date(normalizeDate(task.date) || task.date);
+    const targetDate = new Date(targetDateStr);
+
+    if (isNaN(taskDate.getTime()) || isNaN(targetDate.getTime())) return false;
+
+    // If the target date is after the original task date, it's a future occurrence
+    return targetDate > taskDate;
+  };
+
+  const filteredTasks = useMemo(() =>
+    tasks.filter(t => {
+      // For recurring tasks, only show based on recurrence logic
+      if (t.recurring) {
+        return shouldShowRecurringTask(t, selectedDateStr);
+      }
+      // For non-recurring tasks, show only on their exact date
+      const taskDateStr = normalizeDate(t.date);
+      return taskDateStr === selectedDateStr;
+    }),
     [tasks, selectedDateStr]
   );
 
@@ -71,12 +119,34 @@ export default function CalendarView({ tasks, bills, loggedExpenses }: CalendarV
     [loggedExpenses, selectedDateStr]
   );
 
-  const hasItemsOnDay = (day: Date) => {
+  const getItemsCountOnDay = (day: Date) => {
     const dayStr = format(day, 'yyyy-MM-dd');
-    return tasks.some(t => normalizeDate(t.date) === dayStr) ||
-           bills.some(b => normalizeDate(b.dueDate) === dayStr) ||
-           loggedExpenses.some(e => normalizeDate(e.dueDate) === dayStr);
+    let count = 0;
+
+    // Count tasks
+    tasks.forEach(t => {
+      if (t.recurring) {
+        if (shouldShowRecurringTask(t, dayStr)) count++;
+      } else {
+        const taskDateStr = normalizeDate(t.date);
+        if (taskDateStr === dayStr) count++;
+      }
+    });
+
+    // Count bills
+    bills.forEach(b => {
+      if (normalizeDate(b.dueDate) === dayStr) count++;
+    });
+
+    // Count expenses
+    loggedExpenses.forEach(e => {
+      if (normalizeDate(e.dueDate) === dayStr) count++;
+    });
+
+    return count;
   };
+
+
 
   return (
     <div className="main-content animate-fade-in" style={{ paddingBottom: '100px' }}>
@@ -102,7 +172,7 @@ export default function CalendarView({ tasks, bills, loggedExpenses }: CalendarV
             const isCurrMonth = isSameMonth(day, monthStart);
             const isCurrDay = isToday(day);
             const isSelected = isSameDay(day, selectedDate);
-            const hasItems = hasItemsOnDay(day);
+            const itemsCount = getItemsCountOnDay(day);
 
             return (
               <div 
@@ -127,9 +197,11 @@ export default function CalendarView({ tasks, bills, loggedExpenses }: CalendarV
                 <span className="text-sm" style={{ fontWeight: (isSelected || isCurrDay) ? 'bold' : 'normal', color: (isSelected || isCurrDay) ? 'var(--text-primary)' : 'inherit' }}>
                   {format(day, 'd')}
                 </span>
-                {hasItems && (
-                  <div style={{ display: 'flex', gap: '2px' }}>
-                    <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'var(--accent-primary)' }}></div>
+                {itemsCount > 0 && (
+                  <div style={{ display: 'flex', gap: '2px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                    {Array.from({ length: Math.min(itemsCount, 5) }).map((_, dotIndex) => (
+                      <div key={dotIndex} style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'var(--accent-primary)' }}></div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -146,22 +218,33 @@ export default function CalendarView({ tasks, bills, loggedExpenses }: CalendarV
 
         <div className="task-list">
           {/* Combined list of filtered items */}
-          {filteredTasks.map(task => (
-            <div key={task.id} className="glass-card task-item">
-              <div className="task-status">
-                <div style={{ background: 'rgba(59, 130, 246, 0.2)', padding: '6px', borderRadius: '50%' }}>
-                  <Clock size={18} color="#3b82f6" />
+          {filteredTasks.map(task => {
+            // For recurring tasks, future occurrences should show as undone
+            const isFutureOccurrence = isFutureRecurrence(task, selectedDateStr);
+            const showAsDone = task.done && !isFutureOccurrence;
+
+            return (
+              <div key={`${task.id}-${selectedDateStr}`} className="glass-card task-item">
+                <div className="task-status">
+                  <div style={{ background: 'rgba(59, 130, 246, 0.2)', padding: '6px', borderRadius: '50%' }}>
+                    <Clock size={18} color="#3b82f6" />
+                  </div>
+                </div>
+                <div className="task-info">
+                  <p className={`task-title ${showAsDone ? 'strikethrough' : ''}`}>{task.title}</p>
+                  <div className="task-meta">
+                    <span className="badge-time">{task.time}</span>
+                    <span className="badge-priority info">Reminder</span>
+                    {task.recurring && isFutureOccurrence && (
+                      <span className="badge-priority" style={{ background: 'rgba(16, 185, 129, 0.2)', color: '#10b981' }}>
+                        Upcoming
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
-              <div className="task-info">
-                <p className={`task-title ${task.done ? 'strikethrough' : ''}`}>{task.title}</p>
-                <div className="task-meta">
-                  <span className="badge-time">{task.time}</span>
-                  <span className="badge-priority info">Reminder</span>
-                </div>
-              </div>
-            </div>
-          ))}
+            );
+          })}
 
           {filteredBills.map(bill => (
             <div key={bill.id} className="glass-card bill-item" style={{ padding: '1.25rem' }}>

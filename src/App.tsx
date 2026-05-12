@@ -1,33 +1,120 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { format } from 'date-fns';
-import Tesseract from 'tesseract.js';
 import * as chrono from 'chrono-node';
-import { supabase } from './lib/supabase';
+
+import type { User as SupabaseUser } from '@supabase/supabase-js';
+import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Calendar, Plus, Wallet, Home, User, Settings, Camera, Zap, X, Upload } from 'lucide-react';
+import { Calendar, Plus, Wallet, Home, User, Settings, Zap, X } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import CalendarView from './pages/CalendarView';
 import Expenses from './pages/Expenses';
 import SettingsView from './pages/Settings';
-import type { Task, Bill } from './types';
+import type {
+  Task,
+  Bill,
+  Account,
+  Transaction,
+  AppUser,
+  PersistedUserData,
+  PersistedUserDataInput,
+} from './types';
 import './App.css';
-import LoginPage from './pages/LoginPage';
+
+const DEFAULT_BUDGET = 5000;
+
+const getDefaultAccounts = (): Account[] => [
+  { id: '1', name: 'Main Bank', balance: 5000, type: 'Bank' },
+  { id: '2', name: 'Cash', balance: 500, type: 'Cash' },
+];
+
+const emptyUserData = (): PersistedUserData => ({
+  budget: DEFAULT_BUDGET,
+  tasks: [],
+  bills: [],
+  loggedExpenses: [],
+  accounts: getDefaultAccounts(),
+  transactions: [],
+});
+
+const normalizePersistedUserData = (
+  source?: PersistedUserDataInput,
+  fallbackOverrides?: Partial<PersistedUserData>,
+): PersistedUserData => {
+  const base = {
+    ...emptyUserData(),
+    ...fallbackOverrides,
+  };
+
+  return {
+    budget: typeof source?.budget === 'number' && Number.isFinite(source.budget)
+      ? source.budget
+      : base.budget,
+    tasks: Array.isArray(source?.tasks) ? source.tasks : base.tasks,
+    bills: Array.isArray(source?.bills) ? source.bills : base.bills,
+    loggedExpenses: Array.isArray(source?.loggedExpenses) ? source.loggedExpenses : base.loggedExpenses,
+    accounts: Array.isArray(source?.accounts) && source.accounts.length > 0 ? source.accounts : base.accounts,
+    transactions: Array.isArray(source?.transactions) ? source.transactions : base.transactions,
+  };
+};
+
+const storageKey = (field: keyof PersistedUserData, userId: string) => `${field}_${userId}`;
+
+const loadLocalUserData = (userId: string): PersistedUserData => {
+  const fallback = emptyUserData();
+
+  const readJson = <T,>(field: keyof PersistedUserData, fallbackValue: T): T => {
+    const saved = localStorage.getItem(storageKey(field, userId));
+    return saved ? JSON.parse(saved) : fallbackValue;
+  };
+
+  const savedBudget = localStorage.getItem(storageKey('budget', userId));
+
+  return normalizePersistedUserData({
+    budget: savedBudget ? Number(savedBudget) : fallback.budget,
+    tasks: readJson('tasks', fallback.tasks),
+    bills: readJson('bills', fallback.bills),
+    loggedExpenses: readJson('loggedExpenses', fallback.loggedExpenses),
+    accounts: readJson('accounts', fallback.accounts),
+    transactions: readJson('transactions', fallback.transactions),
+  });
+};
+
+const persistLocalUserData = (userId: string, data: PersistedUserData) => {
+  localStorage.setItem(storageKey('budget', userId), data.budget.toString());
+  localStorage.setItem(storageKey('tasks', userId), JSON.stringify(data.tasks));
+  localStorage.setItem(storageKey('bills', userId), JSON.stringify(data.bills));
+  localStorage.setItem(storageKey('loggedExpenses', userId), JSON.stringify(data.loggedExpenses));
+  localStorage.setItem(storageKey('accounts', userId), JSON.stringify(data.accounts));
+  localStorage.setItem(storageKey('transactions', userId), JSON.stringify(data.transactions));
+};
+
+const mapSupabaseUser = (user: SupabaseUser): AppUser => ({
+  id: user.id,
+  email: user.email ?? '',
+  name:
+    (typeof user.user_metadata?.name === 'string' && user.user_metadata.name) ||
+    user.email?.split('@')[0] ||
+    'User',
+  avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.email ?? user.id}`,
+});
 
 function App() {
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [taskInput, setTaskInput] = useState('');
   const [isParsing, setIsParsing] = useState(false);
-  
-  const [currentUser, setCurrentUser] = useState<any>(() => {
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isAuthReady, setIsAuthReady] = useState(!isSupabaseConfigured);
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
+    if (isSupabaseConfigured) return null;
     const saved = localStorage.getItem('currentUser');
     return saved ? JSON.parse(saved) : null;
   });
 
-  const [isOcrModalOpen, setIsOcrModalOpen] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+  const [manualAmount, setManualAmount] = useState('');
+  const [manualDate, setManualDate] = useState(format(new Date(), 'yyyy-MM-dd'));
 
   // Task Structured States
   const [taskDate, setTaskDate] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -38,31 +125,16 @@ function App() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [budget, setBudget] = useState<number>(() => {
-    if (!currentUser) return 0;
-    const saved = localStorage.getItem(`budget_${currentUser.id}`);
-    return saved ? Number(saved) : 0;
-  });
-  const [tasks, setTasks] = useState<Task[]>(() => {
-    if (!currentUser) return [];
-    const saved = localStorage.getItem(`tasks_${currentUser.id}`);
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [bills, setBills] = useState<Bill[]>(() => {
-    if (!currentUser) return [];
-    const saved = localStorage.getItem(`bills_${currentUser.id}`);
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [loggedExpenses, setLoggedExpenses] = useState<Bill[]>(() => {
-    if (!currentUser) return [];
-    const saved = localStorage.getItem(`loggedExpenses_${currentUser.id}`);
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [budget, setBudget] = useState<number>(DEFAULT_BUDGET);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [bills, setBills] = useState<Bill[]>([]);
+  const [loggedExpenses, setLoggedExpenses] = useState<Bill[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>(getDefaultAccounts);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
 
   const loadedUserId = useRef<string | null>(null);
 
-  // Cloud Sync Logic
-  const syncToCloud = async (data: any) => {
+  const syncToCloud = async (data: PersistedUserData) => {
     if (!currentUser || !supabase || loadedUserId.current !== currentUser.id) return;
     try {
       const { error } = await supabase
@@ -78,7 +150,7 @@ function App() {
     }
   };
 
-  const loadFromCloud = async (userId: string) => {
+  const loadFromCloud = async (userId: string): Promise<PersistedUserData | null> => {
     if (!supabase) return null;
     try {
       const { data, error } = await supabase
@@ -91,73 +163,94 @@ function App() {
         console.log('No cloud data found or error:', error.message);
         return null;
       }
-      return data?.data;
+      return normalizePersistedUserData(data?.data);
     } catch (err) {
       console.error('Failed to load from cloud:', err);
       return null;
     }
   };
 
-  // Persistence effects
   useEffect(() => {
-    const initData = async () => {
-      if (currentUser) {
-        localStorage.setItem('currentUser', JSON.stringify(currentUser));
-        
-        // 1. Try to load from Cloud (Supabase)
-        const cloudData = await loadFromCloud(currentUser.id);
-        
-        if (cloudData) {
-          console.log('Loaded from Cloud!');
-          setTasks(cloudData.tasks || []);
-          setBills(cloudData.bills || []);
-          setLoggedExpenses(cloudData.loggedExpenses || []);
-          setBudget(cloudData.budget || 5000);
-        } else {
-          // 2. Fallback to LocalStorage
-          const savedBudget = localStorage.getItem(`budget_${currentUser.id}`);
-          const savedTasks = localStorage.getItem(`tasks_${currentUser.id}`);
-          const savedBills = localStorage.getItem(`bills_${currentUser.id}`);
-          const savedLogged = localStorage.getItem(`loggedExpenses_${currentUser.id}`);
-          
-          setBudget(savedBudget !== null ? Number(savedBudget) : 5000);
-          setBills(savedBills !== null ? JSON.parse(savedBills) : []);
-          setLoggedExpenses(savedLogged !== null ? JSON.parse(savedLogged) : []);
+    if (!supabase) return;
+    const client = supabase;
 
-          if (savedTasks !== null) {
-            const loadedTasks = JSON.parse(savedTasks);
-            setTasks(loadedTasks);
-          } else {
-            setTasks([]);
-          }
-        }
-        // Mark as loaded for this specific user
-        loadedUserId.current = currentUser.id;
-      } else {
-        // Clear state when logged out
-        setTasks([]);
-        setBills([]);
-        setLoggedExpenses([]);
-        setBudget(0);
-        loadedUserId.current = null;
-      }
+    let isMounted = true;
+
+    const restoreSession = async () => {
+      const { data } = await client.auth.getSession();
+      if (!isMounted) return;
+      setCurrentUser(data.session?.user ? mapSupabaseUser(data.session.user) : null);
+      setIsAuthReady(true);
     };
 
-    initData();
-  }, [currentUser]);
+    restoreSession();
 
-  // Save effects - specifically only save when the DATA changes
+    const { data: authListener } = client.auth.onAuthStateChange((_event, session) => {
+      setCurrentUser(session?.user ? mapSupabaseUser(session.user) : null);
+      setIsAuthReady(true);
+    });
+
+    return () => {
+      isMounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    const hydrateUserData = async () => {
+      setIsInitialLoading(true);
+
+      if (currentUser) {
+        if (!isSupabaseConfigured) {
+          localStorage.setItem('currentUser', JSON.stringify(currentUser));
+        }
+
+        const localData = loadLocalUserData(currentUser.id);
+        const cloudData = await loadFromCloud(currentUser.id);
+        const nextData = normalizePersistedUserData(cloudData, localData);
+
+        setTasks(nextData.tasks);
+        setBills(nextData.bills);
+        setLoggedExpenses(nextData.loggedExpenses);
+        setBudget(nextData.budget);
+        setAccounts(nextData.accounts.length > 0 ? nextData.accounts : getDefaultAccounts());
+        setTransactions(nextData.transactions);
+        loadedUserId.current = currentUser.id;
+        persistLocalUserData(currentUser.id, nextData);
+        syncToCloud(nextData);
+      } else {
+        loadedUserId.current = null;
+        const resetData = emptyUserData();
+        setBudget(resetData.budget);
+        setTasks(resetData.tasks);
+        setBills(resetData.bills);
+        setLoggedExpenses(resetData.loggedExpenses);
+        setAccounts(resetData.accounts);
+        setTransactions(resetData.transactions);
+      }
+
+      setIsInitialLoading(false);
+    };
+
+    if (isAuthReady) {
+      hydrateUserData();
+    }
+  }, [currentUser, isAuthReady]);
+
   useEffect(() => { 
     if (currentUser && loadedUserId.current === currentUser.id) {
-      localStorage.setItem(`budget_${currentUser.id}`, budget.toString());
-      syncToCloud({ tasks, bills, loggedExpenses, budget });
-    }
-  }, [budget, tasks, bills, loggedExpenses]);
+      const dataToSave: PersistedUserData = { tasks, bills, loggedExpenses, budget, accounts, transactions };
 
-  const handleLogin = (user: any) => {
-    setCurrentUser(user);
-    // Data loading is handled by the useEffect[currentUser]
-  };
+      persistLocalUserData(currentUser.id, dataToSave);
+      syncToCloud(dataToSave);
+    }
+  }, [budget, tasks, bills, loggedExpenses, accounts, transactions, currentUser]);
+
+
+
+
+
+
 
   const calculateNextDate = (currentDate: string, frequency: string) => {
     const date = new Date(currentDate);
@@ -194,9 +287,13 @@ function App() {
     }
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
-    localStorage.removeItem('currentUser');
+  const handleLogout = async () => {
+    if (supabase) {
+      await supabase.auth.signOut();
+    } else {
+      setCurrentUser(null);
+      localStorage.removeItem('currentUser');
+    }
     navigate('/');
   };
 
@@ -207,9 +304,11 @@ function App() {
     setIsTaskModalOpen(true);
   };
 
-  const handleOcrClick = () => {
+
+
+  const handleManualEntryClick = () => {
     setShowAddMenu(false);
-    setIsOcrModalOpen(true);
+    setIsManualModalOpen(true);
   };
 
   const submitTask = async () => {
@@ -247,108 +346,25 @@ function App() {
     setIsParsing(false);
   };
 
-  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [showCamera, setShowCamera] = useState(false);
 
-  const startCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-      setCameraStream(stream);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-      setShowCamera(true);
-    } catch (err) {
-      console.error("Error accessing camera:", err);
-      alert("Could not access camera. Please check permissions.");
+
+
+
+
+
+  const submitManualExpense = () => {
+    const expenseAmount = parseFloat(manualAmount);
+    if (isNaN(expenseAmount) || expenseAmount <= 0) {
+      alert('Please enter a valid amount');
+      return;
     }
-  };
 
-  const stopCamera = () => {
-    if (cameraStream) {
-      cameraStream.getTracks().forEach(track => track.stop());
-      setCameraStream(null);
+    if (accounts.length > 0) {
+      addTransaction(accounts[0].id, expenseAmount, 'Expense', 'Expense', 'Expense');
     }
-    setShowCamera(false);
-  };
-
-  const captureImage = () => {
-    if (videoRef.current) {
-      const canvas = document.createElement('canvas');
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(videoRef.current, 0, 0);
-        canvas.toBlob((blob) => {
-          if (blob) {
-            const file = new File([blob], "captured_bill.jpg", { type: "image/jpeg" });
-            setSelectedFile(file);
-            stopCamera();
-          }
-        }, 'image/jpeg', 0.95);
-      }
-    }
-  };
-
-  const submitOcrScan = async () => {
-    if (!selectedFile) return;
-    setIsScanning(true);
-
-    try {
-      // Run OCR directly in the browser
-      const { data: { text } } = await Tesseract.recognize(
-        selectedFile,
-        'eng',
-        { logger: m => console.log(m) }
-      );
-
-      // Extract Amount
-      const amountRegex = /[$]?\d{1,3}(?:,\d{3})*(?:\.\d{2})/g;
-      const amounts = text.match(amountRegex) || [];
-      let maxAmount = 0;
-      amounts.forEach(amt => {
-        const num = parseFloat(amt.replace(/[$|,]/g, ''));
-        if (num > maxAmount) maxAmount = num;
-      });
-
-      // Extract Dates
-      const dateRegex = /\b\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}\b|\b\d{4}[\/-]\d{1,2}[\/-]\d{1,2}\b/g;
-      const dates = text.match(dateRegex) || [];
-      
-      // Clean up vendor name (first line usually)
-      const lines = text.split('\n').filter(l => l.trim().length > 2);
-      const vendor = lines.length > 0 ? lines[0].trim() : 'Scanned Bill';
-      
-      const newBill: Bill = {
-        id: Date.now(),
-        name: vendor,
-        amount: maxAmount > 0 ? maxAmount.toFixed(2) : '0.00',
-        dueDate: (dates && dates.length > 0 && dates[0]) ? dates[0] : format(new Date(), 'yyyy-MM-dd'),
-        status: 'Logged'
-      };
-
-      setLoggedExpenses([newBill, ...loggedExpenses]);
-      setIsOcrModalOpen(false);
-      setSelectedFile(null);
-      stopCamera();
-    } catch (error) {
-      console.error('Failed to scan bill', error);
-      const newBill: Bill = {
-        id: Date.now(),
-        name: 'Scan Failed',
-        amount: '0.00',
-        dueDate: format(new Date(), 'yyyy-MM-dd'),
-        status: 'Error'
-      };
-      setBills([newBill, ...bills]);
-      setIsOcrModalOpen(false);
-      setSelectedFile(null);
-      stopCamera();
-    } finally {
-      setIsScanning(false);
-    }
+    setIsManualModalOpen(false);
+    setManualAmount('');
+    setManualDate(format(new Date(), 'yyyy-MM-dd'));
   };
 
   const toggleTask = (taskId: number) => {
@@ -386,67 +402,99 @@ function App() {
     });
   };
 
-  const payBill = (billId: number) => {
-    const billToPay = bills.find(b => b.id === billId);
-    if (!billToPay) return;
-
-    setBills(bills.map(bill => 
-      bill.id === billId ? { ...bill, status: 'Paid' } : bill
-    ));
-
-    setTimeout(() => {
-      setBills(prev => prev.filter(b => b.id !== billId));
-      setLoggedExpenses(prev => [{ ...billToPay, status: 'Logged' }, ...prev]);
-    }, 500);
+  const deleteTask = (taskId: number) => {
+    setTasks(prevTasks => prevTasks.filter(t => t.id !== taskId));
   };
 
-  if (!currentUser) {
-    return <LoginPage onLogin={handleLogin} />;
-  }
+  const addTransaction = (accountId: string, amount: number, description: string, category: string, type: 'Expense' | 'Income' = 'Expense') => {
+    const newTransaction: Transaction = {
+      id: Date.now(),
+      accountId,
+      amount,
+      description,
+      date: new Date().toISOString(),
+      type,
+      category
+    };
+    setTransactions(prev => [newTransaction, ...prev]);
+    setAccounts(prev => prev.map(acc => 
+      acc.id === accountId 
+        ? { ...acc, balance: type === 'Expense' ? acc.balance - amount : acc.balance + amount }
+        : acc
+    ));
+  };
+
+  const logBill = (bill: Bill) => {
+    setBills(bills.map(b => b.id === bill.id ? { ...b, status: 'Paid' } : b));
+    setLoggedExpenses([bill, ...loggedExpenses]);
+    if (accounts.length > 0) {
+      const amount = parseFloat(bill.amount) || 0;
+      addTransaction(accounts[0].id, amount, bill.name, 'General', 'Expense');
+    }
+  };
+
+  // Temporarily bypass authentication for demo
+  // if (!isAuthReady) {
+  //   return <div className="auth-container"><div className="spinner"></div></div>;
+  // }
+
+  // if (!currentUser) {
+  //   return <LoginPage onLogin={handleLogin} isCloudAuthEnabled={isSupabaseConfigured} />;
+  // }
 
   return (
-    <div className={`app-container dark-theme`}>
+    <div className="app-container dark-theme">
       {/* Header */}
       <header className="glass-panel header-nav">
         <div className="logo-container">
           <div className="logo-icon"><Zap size={20} color="white" style={{margin: '6px'}}/></div>
           <h1>Smart Task Wallet</h1>
+          {supabase ? (
+            <span className="text-xs text-success ml-2" title="Cloud Sync Active">●</span>
+          ) : (
+            <span className="text-xs text-secondary ml-2" title="Offline Mode (Local Storage Only)">○</span>
+          )}
         </div>
         <div className="header-actions">
+          {isInitialLoading && <div className="spinner-small"></div>}
           <button className="icon-btn" onClick={() => navigate('/settings')}><User size={20} /></button>
         </div>
       </header>
 
       {/* Main Content Area */}
-      <Routes>
-        <Route path="/" element={
-          <Dashboard 
-            tasks={tasks} 
-            bills={bills} 
-            loggedExpenses={loggedExpenses}
-            budget={budget}
-            onToggleTask={toggleTask} 
-            onPayBill={payBill} 
-          />
-        } />
-        <Route path="/calendar" element={
-          <CalendarView 
-            tasks={tasks} 
-            bills={bills} 
-            loggedExpenses={loggedExpenses} 
-          />
-        } />
-        <Route path="/expenses" element={<Expenses loggedExpenses={loggedExpenses} budget={budget} />} />
-        <Route path="/settings" element={<SettingsView budget={budget} onUpdateBudget={setBudget} onLogout={handleLogout} currentUser={currentUser} />} />
-      </Routes>
+      <div className={isInitialLoading ? 'content-blur' : ''}>
+        <Routes>
+          <Route path="/" element={
+            <Dashboard
+              tasks={tasks}
+              bills={bills}
+              loggedExpenses={loggedExpenses}
+              accounts={accounts}
+              transactions={transactions}
+              budget={budget}
+              onToggleTask={toggleTask}
+              onLogBill={logBill}
+            />
+          } />
+          <Route path="/calendar" element={
+            <CalendarView 
+              tasks={tasks} 
+              bills={bills} 
+              loggedExpenses={loggedExpenses} 
+            />
+          } />
+          <Route path="/expenses" element={<Expenses loggedExpenses={loggedExpenses} transactions={transactions} accounts={accounts} budget={budget} onAddTransaction={addTransaction} />} />
+          <Route path="/settings" element={<SettingsView budget={budget} tasks={tasks} onUpdateBudget={setBudget} onDeleteTask={deleteTask} onLogout={handleLogout} currentUser={currentUser} />} />
+        </Routes>
+      </div>
 
       {/* Floating Action Button */}
       <div className="fab-container">
         {showAddMenu && (
           <div className="fab-menu animate-fade-in-up">
-            <button className="fab-menu-item" onClick={handleOcrClick}>
-              <Camera size={18} />
-              <span>Scan Bill (OCR)</span>
+            <button className="fab-menu-item" onClick={handleManualEntryClick}>
+              <Wallet size={18} />
+              <span>Add Expense</span>
             </button>
             <button className="fab-menu-item" onClick={handleSmartTaskClick}>
               <Plus size={18} />
@@ -563,83 +611,51 @@ function App() {
         </div>
       )}
 
-      {/* OCR Bill Scanner Modal */}
-      {isOcrModalOpen && (
+
+
+      {/* Manual Entry Modal */}
+      {isManualModalOpen && (
         <div className="modal-overlay animate-fade-in">
-          <div className="glass-panel modal-content animate-fade-in-up" style={{ maxWidth: '600px' }}>
+          <div className="glass-panel modal-content animate-fade-in-up" style={{ maxWidth: '500px' }}>
             <div className="modal-header">
-              <h3>Scan Bill or Receipt</h3>
-              <button className="icon-btn-small" onClick={() => { setIsOcrModalOpen(false); setSelectedFile(null); stopCamera(); }}>
+              <h3>Add Expense</h3>
+              <button className="icon-btn-small" onClick={() => { setIsManualModalOpen(false); setManualAmount(''); setManualDate(format(new Date(), 'yyyy-MM-dd')); }}>
                 <X size={20} />
               </button>
             </div>
-            
+
             <div className="modal-body">
-              {showCamera ? (
-                <div className="camera-view-container">
-                  <video ref={videoRef} autoPlay playsInline className="camera-preview"></video>
-                  <div className="camera-controls">
-                    <button className="glass-btn-secondary" onClick={stopCamera}>Cancel</button>
-                    <button className="capture-btn" onClick={captureImage}>
-                      <div className="capture-btn-inner"></div>
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <p className="text-secondary text-sm mb-4">
-                    Take a photo or upload an image of your bill. Our AI will extract the details even from blurry images.
-                  </p>
-                  
-                  <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem' }}>
-                    <button className="glass-panel camera-toggle-btn" style={{ flex: 1 }} onClick={startCamera}>
-                      <Camera size={24} className="mb-2" />
-                      <span>Use Camera</span>
-                    </button>
-                    <div className="upload-container" style={{ flex: 1, margin: 0 }} onClick={() => fileInputRef.current?.click()}>
-                      <input 
-                        type="file" 
-                        ref={fileInputRef} 
-                        className="hidden-file-input" 
-                        accept="image/*"
-                        onChange={(e) => {
-                          if (e.target.files && e.target.files.length > 0) {
-                            setSelectedFile(e.target.files[0]);
-                          }
-                        }}
-                      />
-                      <Upload size={24} className="mb-2" />
-                      <span>{selectedFile ? selectedFile.name : 'Upload Image'}</span>
-                    </div>
-                  </div>
-                </>
-              )}
-              
-              {selectedFile && !showCamera && (
-                <div className="selected-preview glass-panel">
-                  <p className="text-sm">Image Selected: <strong>{selectedFile.name}</strong></p>
-                  <button className="text-accent-secondary text-xs" onClick={() => setSelectedFile(null)}>Remove</button>
-                </div>
-              )}
-            </div>
-            
-            {isScanning && (
-              <div className="scanning-indicator">
-                <div className="spinner"></div>
-                <p className="text-sm text-accent-primary">AI is analyzing image...</p>
+              <p className="text-secondary text-sm mb-4">
+                Enter expense details manually.
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <input
+                  type="number"
+                  className="smart-input"
+                  placeholder="Amount"
+                  value={manualAmount}
+                  onChange={(e) => setManualAmount(e.target.value)}
+                  step="0.01"
+                />
+                <input
+                  type="date"
+                  className="smart-input"
+                  value={manualDate}
+                  onChange={(e) => setManualDate(e.target.value)}
+                />
               </div>
-            )}
-            
+            </div>
+
             <div className="modal-actions mt-4">
-              <button className="glass-btn-secondary" onClick={() => { setIsOcrModalOpen(false); setSelectedFile(null); stopCamera(); }}>
+              <button className="glass-btn-secondary" onClick={() => { setIsManualModalOpen(false); setManualAmount(''); setManualDate(format(new Date(), 'yyyy-MM-dd')); }}>
                 Cancel
               </button>
-              <button 
-                className="glass-btn" 
-                onClick={submitOcrScan}
-                disabled={isScanning || !selectedFile || showCamera}
+              <button
+                className="glass-btn"
+                onClick={submitManualExpense}
+                disabled={!manualAmount}
               >
-                {isScanning ? 'Scanning...' : 'Extract Data'}
+                Add Expense
               </button>
             </div>
           </div>

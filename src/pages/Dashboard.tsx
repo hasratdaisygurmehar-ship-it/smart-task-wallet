@@ -1,18 +1,21 @@
 import { Calendar, CheckCircle2, Circle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
-import type { Task, Bill } from '../types';
+import type { Task, Bill, Account, Transaction } from '../types';
+import { CreditCard, Landmark, Banknote, PiggyBank } from 'lucide-react';
 
 interface DashboardProps {
   tasks: Task[];
   bills: Bill[];
   loggedExpenses: Bill[];
+  accounts: Account[];
+  transactions: Transaction[];
   budget: number;
   onToggleTask: (id: number) => void;
-  onPayBill: (id: number) => void;
+  onLogBill: (bill: Bill) => void;
 }
 
-export default function Dashboard({ tasks, bills, loggedExpenses, budget, onToggleTask, onPayBill }: DashboardProps) {
+export default function Dashboard({ tasks, bills, loggedExpenses, accounts, transactions, budget, onToggleTask, onLogBill }: DashboardProps) {
   const navigate = useNavigate();
   const today = format(new Date(), 'yyyy-MM-dd');
   
@@ -26,7 +29,7 @@ export default function Dashboard({ tasks, bills, loggedExpenses, budget, onTogg
   const totalSpent = loggedExpenses.reduce((acc, curr) => {
     const val = parseFloat(curr.amount.replace('$', '').replace(',', '')) || 0;
     return acc + val;
-  }, 0);
+  }, 0) + transactions.filter(t => t.type === 'Expense').reduce((acc, curr) => acc + curr.amount, 0);
 
   const monthlyBudget = budget;
   const progress = Math.min((totalSpent / monthlyBudget) * 100, 100);
@@ -38,7 +41,22 @@ export default function Dashboard({ tasks, bills, loggedExpenses, budget, onTogg
         <section className="glass-panel main-content">
           <div className="section-header">
             <h2>Expense Summary</h2>
-            <span className="badge">October</span>
+            <span className="badge">{format(new Date(), 'MMMM')}</span>
+          </div>
+
+          <div className="accounts-mini-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px', marginBottom: '20px' }}>
+            {accounts.filter(acc => acc.id !== '1' && acc.id !== '2').map(acc => (
+              <div key={acc.id} className="glass-card-compact" style={{ padding: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  {acc.type === 'Bank' && <Landmark size={14} className="text-accent-primary" />}
+                  {acc.type === 'Card' && <CreditCard size={14} className="text-accent-primary" />}
+                  {acc.type === 'Cash' && <Banknote size={14} className="text-accent-primary" />}
+                  {acc.type === 'Savings' && <PiggyBank size={14} className="text-accent-primary" />}
+                  <span className="text-xs text-secondary">{acc.name}</span>
+                </div>
+                <p className="font-bold">{acc.balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+              </div>
+            ))}
           </div>
           
           <div className="expense-overview">
@@ -96,20 +114,18 @@ export default function Dashboard({ tasks, bills, loggedExpenses, budget, onTogg
           </div>
           <div className="bill-list">
             {bills.map(bill => (
-              <div key={bill.id} className="glass-card bill-item">
+              <div
+                key={bill.id}
+                className={`glass-card bill-item clickable ${bill.status === 'Paid' ? 'completed' : ''}`}
+                onClick={() => bill.status !== 'Paid' && onLogBill(bill)}
+              >
                 <div className="bill-info">
                   <h4>{bill.name}</h4>
                   <p className="text-secondary text-sm">Due: {bill.dueDate}</p>
                 </div>
                 <div className="bill-amount">
                   <span className="amount">{bill.amount}</span>
-                  <button 
-                    className={`glass-btn-small ${bill.status === 'Paid' ? 'paid' : ''}`}
-                    onClick={() => onPayBill(bill.id)}
-                    disabled={bill.status === 'Paid'}
-                  >
-                    {bill.status === 'Paid' ? 'Paid' : 'Pay'}
-                  </button>
+                  {bill.status === 'Paid' && <span className="status-badge paid">Logged</span>}
                 </div>
               </div>
             ))}

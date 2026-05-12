@@ -1,5 +1,15 @@
 # React + TypeScript + Vite
 
+## Private per-account history setup
+
+To make each account's history permanent and private:
+
+1. Copy `.env.example` to `.env` and fill in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+2. In Supabase SQL Editor, run [backend/supabase-user-data.sql](backend/supabase-user-data.sql).
+3. In Supabase Auth, enable Email authentication.
+
+The app now signs users in with Supabase when those environment variables are present, stores each user's history in `public.user_data`, and relies on Row Level Security so authenticated users can only read and write their own row.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
