@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { format } from 'date-fns';
 import * as chrono from 'chrono-node';
+import { Analytics } from '@vercel/analytics/react';
 
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
@@ -681,6 +682,7 @@ function App() {
           <span>Settings</span>
         </button>
       </nav>
+      <Analytics />
     </div>
   );
 }
